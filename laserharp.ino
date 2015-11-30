@@ -188,7 +188,7 @@ void playNote(int firstNote, int secondNote)
         Serial.print("Playing notes ");
         Serial.print(firstNote);
         Serial.print(" and ");
-        Serial.print(secondNote);
+        Serial.println(secondNote);
     }
 
     //Pick the notes to be played and which channel to play them on
@@ -238,6 +238,7 @@ void checkNotes(int reflectedLightValues[], boolean pluckedNotes[])
             Serial.print(reflectedLightValues[i]);
             Serial.print(" - ");
         }
+        Serial.println("");
     }
 
     //So ... are any light readings different from any others?
