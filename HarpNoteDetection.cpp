@@ -20,10 +20,10 @@ void HarpNoteDetection::checkNotes(int reflectedLightValues[], bool pluckedNotes
 		//points that are "large" (ie, over the delta.)
 		int counter = 0;
 		for (int comparisonString = 0; comparisonString < numberNotes; comparisonString++) {
-		int difference = reflectedLightValues[testString] - reflectedLightValues[comparisonString];
-			if (difference > pluckDelta) {
-				counter++;
-			}
+		  int difference = reflectedLightValues[testString] - reflectedLightValues[comparisonString];
+		  if (difference > pluckDelta) {
+		    counter++;
+		  }
 		}
 
 		//If there are at least three strings with a reading much lower than this one - then

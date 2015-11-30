@@ -1,3 +1,4 @@
+#ifdef GINSING
 #include <GinSing.h>
 #include <GinSingDefs.h>
 #include <GinSingMaster.h>
@@ -10,6 +11,8 @@
 
 #include <Wire.h>
 #include <GinSing.h>
+#endif
+
 #include <Adafruit_MotorShield.h>
 #include "utility/Adafruit_PWMServoDriver.h"
 
@@ -30,6 +33,7 @@ Adafruit_MotorShield AFMS = Adafruit_MotorShield();
 // to motor port #2 (M3 and M4)
 Adafruit_StepperMotor *myMotor = AFMS.getStepper(200, 2);
 
+#ifdef GINSING
 GinSing  GS;
 #define rcvPin  4  // this is the pin used for receiving    ( can be either 4 or 12 )
 #define sndPin  3  // this is the pin used for transmitting ( can be either 3 or 11 ) 
@@ -38,17 +42,23 @@ GinSingPoly * poly;
 
 #define GINSING0 0                                      
 #define GINSING1 1   
+#endif
 
 const int lightSensorPin = 0;
+const int sonarPin = 1;
 
 const int stepSize = 1;
 const int delayBetweenSteps = 15;
 const int numberNotes = 7;
 
+#ifdef GINSING
 GSNote ginsingNotes[numberNotes + 1];
+#endif
 
+#ifdef ADJUSTER_BUTTONS
 const int buttonApin = 9;
 const int buttonBpin = 8;
+#endif
 
 HarpNoteChoice harpNoteChoice;
 HarpNoteDetection harpNoteDetector;
@@ -64,8 +74,10 @@ void setup()
 	//For the light sensor
 	analogReference(EXTERNAL);
 
+#ifdef ADJUSTER_BUTTONS
 	pinMode(buttonApin, INPUT_PULLUP);
 	pinMode(buttonBpin, INPUT_PULLUP);
+#endif
 
 	AFMS.begin();  // create with the default frequency 1.6KHz
 	myMotor->setSpeed(250);
@@ -76,9 +88,12 @@ void setup()
 		pluckedNotes[i] = false;
 	}
 
+#ifdef GINSING
 	setupGinSing();
+#endif
 }
 
+#ifdef GINSING
 //This is the code required to get GinSing ready to go.
 void setupGinSing() {
 	GS.begin(rcvPin, sndPin, ovfPin);               // start the device (required) and enter preset mode
@@ -102,6 +117,7 @@ void setupGinsingNotes() {
 	ginsingNotes[5] = A_4;
 	ginsingNotes[6] = B_4;
 }
+#endif
 
 //This code is used to take the sonar reading and convert
 //that into something to change the GinSing note being played.
@@ -127,7 +143,7 @@ int findMultiplier(int height) {
 //Read the sonar unit and figure out if the
 //notes should move up or down 
 void checkSonar() {
-	int height = analogRead(1);
+	int height = analogRead(sonarPin);
 
 	if (debug) {
 		Serial.print("Height:");
@@ -139,7 +155,7 @@ void checkSonar() {
 	}
 	int multiplier = findMultiplier(height);
 	int baseValue = 16 * multiplier;
-
+#ifdef GINSING
 	ginsingNotes[0] = (GSNote)baseValue;
 	ginsingNotes[1] = (GSNote)(baseValue + 1);
 	ginsingNotes[2] = (GSNote)(baseValue + 2);
@@ -147,11 +163,14 @@ void checkSonar() {
 	ginsingNotes[4] = (GSNote)(baseValue + 4);
 	ginsingNotes[5] = (GSNote)(baseValue + 5);
 	ginsingNotes[6] = (GSNote)(baseValue + 6);
+#endif
 }
 
+#ifdef GINSING
 //These two are the notes that Ginsing is currently playing.
 int ginsingNote0 = -1;
 int ginsingNote1 = -1;
+#endif 
 
 //FirstNote and SecondNote are the notes we want to be playing.
 void playNote(int firstNote, int secondNote) {
@@ -164,8 +183,8 @@ void playNote(int firstNote, int secondNote) {
 	}
 
 	//Pick the notes to be played and which channel to play them on
+#if GINSING
 	harpNoteChoice.pickNotes(ginsingNote0, ginsingNote1, firstNote, secondNote);
-
 	if (ginsingNote0 == -1) {
 		poly->release(GINSING0);
 	}
@@ -181,7 +200,7 @@ void playNote(int firstNote, int secondNote) {
 		poly->setNote(GINSING1, ginsingNotes[ginsingNote1]);
 		poly->trigger(GINSING1);
 	}
-
+#endif
 }
 
 //Move the motor one step. Sleep, then take a light reading. The sleep
@@ -235,6 +254,7 @@ void checkNotes(int reflectedLightValues[], boolean pluckedNotes[]) {
 
 //Is a button pressed? If so move the motor a bit. This lets the user adjust the laser fan so it's pointing upwards properly.
 void checkButtons() {
+#ifdef ADJUSTER_BUTTONS
 	if (digitalRead(buttonApin) == LOW) {
 		myMotor->step(stepSize, BACKWARD, DOUBLE);
 	}
@@ -242,8 +262,8 @@ void checkButtons() {
 	if (digitalRead(buttonBpin) == LOW) {
 		myMotor->step(stepSize, FORWARD, DOUBLE);
 	}
+#endif
 }
-
 
 void loop()
 {
@@ -259,12 +279,12 @@ void loop()
 
 	//It's already read the zero item. So read array items 1 through 7.
 	for (int i = 1; i < numberNotes; i++) {
-  		reflectedLightValues[i] = stepTheMotorAndGetLightReading(FORWARD);
-		checkNotes(reflectedLightValues, pluckedNotes);
+	  reflectedLightValues[i] = stepTheMotorAndGetLightReading(FORWARD);
+	  checkNotes(reflectedLightValues, pluckedNotes);
 	}
 
-	checkButtons();
-        checkSonar();
+  checkButtons();
+  checkSonar();
 
 	//It just read item 7. So going backwards, read items 6 through zero.
 	for (int i = numberNotes - 2; i >= 0; i--) {
@@ -272,12 +292,26 @@ void loop()
 		checkNotes(reflectedLightValues, pluckedNotes);
 	}
 
-	checkButtons();
-        checkSonar();
+  checkButtons();
+  checkSonar();
 
 }
 
+/*
+TODO 
+#) encapsulate ginsing/midi
 
+#) improve (?) initialization of reflected light values 
+    a) spinning mirror during initialization
+    b) by taking averaging several values over time?
+    c) update it while looping?
+
+#) reformat code
+
+#) classes may not need to exist
+
+
+*/
 
 
 
