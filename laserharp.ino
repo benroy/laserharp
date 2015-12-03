@@ -1,3 +1,5 @@
+#include <Logging.h>
+
 #ifdef GINSING
 #include <GinSing.h>
 #include <GinSingDefs.h>
@@ -66,10 +68,12 @@ HarpNoteDetection harpNoteDetector;
 boolean pluckedNotes[numberNotes];
 int reflectedLightValues[numberNotes];
 
+#define LOGLEVEL LOG_LEVEL_VERBOSE
+
 void setup()
 {
+  Log.Init(LOGLEVEL, 9600);
   harpNoteDetector.setNumNotes(numberNotes);
-  Serial.begin(9600);
 
   //For the light sensor
   analogReference(EXTERNAL);
@@ -150,11 +154,7 @@ void checkSonar()
 {
   int height = analogRead(sonarPin);
 
-  if (debug)
-  {
-    Serial.print("Height:");
-    Serial.println(height);
-  }
+  Log.Verbose("Height: %d\n", height);
 
   if (height > 170)
   {
@@ -183,13 +183,7 @@ int ginsingNote1 = -1;
 void playNote(int firstNote, int secondNote)
 {
 
-  if (debug)
-  {
-    Serial.print("Playing notes ");
-    Serial.print(firstNote);
-    Serial.print(" and ");
-    Serial.println(secondNote);
-  }
+  Log.Verbose("Playing notes %d and %d\n", firstNote, secondNote);
 
   //Pick the notes to be played and which channel to play them on
 #if GINSING
@@ -229,17 +223,11 @@ int stepTheMotorAndGetLightReading(int directionToStep)
 //Is debug on? If so print some data.
 void checkNotes(int reflectedLightValues[], boolean pluckedNotes[])
 {
-  if (debug)
+  for (int i = 0; i < numberNotes; i++)
   {
-    for (int i = 0; i < numberNotes; i++)
-    {
-      Serial.print(i);
-      Serial.print("=");
-      Serial.print(reflectedLightValues[i]);
-      Serial.print(" - ");
-    }
-    Serial.println("");
+    Log.Verbose("%d=%d - ", i, reflectedLightValues[i]);
   }
+  Log.Verbose("\n");
 
   //So ... are any light readings different from any others?
   //To find the anomaly, see how different each string is to every other string.
@@ -253,24 +241,19 @@ void checkNotes(int reflectedLightValues[], boolean pluckedNotes[])
   int secondNote = -1;
   if (harpNoteDetector.getNotes(firstNote, secondNote, pluckedNotes))
   {
-    if (debug)
+    if (firstNote >= 0)
     {
-      if (firstNote >= 0)
-      {
-        Serial.print("==============PLUCKED 1: ");
-        Serial.println(firstNote);
-      }
-      if (secondNote >= 0)
-      {
-        Serial.print("==============PLUCKED 2: ");
-        Serial.println(secondNote);
-      }
+      Log.Verbose("==============PLUCKED 1: %d\n", firstNote);
+    }
+    if (secondNote >= 0)
+    {
+      Log.Verbose("==============PLUCKED 2: %d\n", secondNote);
     }
     playNote(firstNote, secondNote);
   }
-  else if (debug)
+  else
   {
-    Serial.println("getNotes returned false - more than three notes were counted as plucked.");
+    Log.Verbose("getNotes returned false - more than three notes were counted as plucked.\n");
   }
   return;
 }
@@ -278,7 +261,6 @@ void checkNotes(int reflectedLightValues[], boolean pluckedNotes[])
 //Is a button pressed? If so move the motor a bit. This lets the user adjust the laser fan so it's pointing upwards properly.
 void checkButtons()
 {
-  Serial.println("in checkButtons");
 #ifdef ADJUSTER_BUTTONS
   if (digitalRead(buttonApin) == LOW)
   {
