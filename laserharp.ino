@@ -26,6 +26,8 @@
 //great stuff - but the code CRAWLS and the laser harp isn't great.
 const boolean debug = false;
 
+boolean gPauseMotor = false;
+
 // Create the motor shield object with the default I2C address
 Adafruit_MotorShield AFMS = Adafruit_MotorShield();
 // Or, create it with a different I2C address (say for stacking)
@@ -68,7 +70,12 @@ HarpNoteDetection harpNoteDetector;
 boolean pluckedNotes[numberNotes];
 int reflectedLightValues[numberNotes];
 
-#define LOGLEVEL LOG_LEVEL_VERBOSE
+
+#define LOGLEVEL LOG_LEVEL_NOOUTPUT 
+//#define LOGLEVEL LOG_LEVEL_ERRORS
+//#define LOGLEVEL LOG_LEVEL_INFOS
+//#define LOGLEVEL LOG_LEVEL_DEBUG
+//#define LOGLEVEL LOG_LEVEL_VERBOSE
 
 void setup()
 {
@@ -214,7 +221,8 @@ void playNote(int firstNote, int secondNote)
 //gives the sensor time to actually report the new reading.
 int stepTheMotorAndGetLightReading(int directionToStep)
 {
-  myMotor->step(stepSize, directionToStep, DOUBLE);
+  if (gPauseMotor == false)
+    myMotor->step(stepSize, directionToStep, DOUBLE);
   delay(delayBetweenSteps);
   int currentLightReading = analogRead(lightSensorPin);
   return currentLightReading;
@@ -274,15 +282,21 @@ void checkButtons()
 #else
   while (Serial.available() > 0)
   {
-    char c = Serial.peek();
-    if (c != 'f' && c != 'b')
+    char c = Serial.read();
+    switch (c)
     {
-      break;
-    }
-    else
-    {
-      myMotor->step(stepSize, c == 'b' ? BACKWARD : FORWARD, DOUBLE);
-      Serial.read();
+      case 'f':
+        myMotor->step(stepSize, FORWARD, DOUBLE);
+        break;
+      case 'b':
+        myMotor->step(stepSize, BACKWARD, DOUBLE);
+        break;
+      case 'p':
+        gPauseMotor = !gPauseMotor;
+        break;
+      default:
+        Log.Error("Ignorning unknown command: %c\n", c);
+        
     }
   }
 #endif
@@ -308,7 +322,7 @@ void loop()
     checkNotes(reflectedLightValues, pluckedNotes);
   }
 
-  checkButtons();
+  //checkButtons();
   checkSonar();
 
   //It just read item 7. So going backwards, read items 6 through zero.
