@@ -173,8 +173,7 @@ void checkSonar()
 
   char heightBuf[81] = {0};
   drawMeter(height, 160, heightBuf);
-//  Log.Info("%s\n", heightBuf);
-  Serial.println(heightBuf);
+  Log.Info("%s\n", heightBuf);
 
   if (height > 170)
   {
