@@ -71,15 +71,25 @@ boolean pluckedNotes[numberNotes];
 int reflectedLightValues[numberNotes];
 
 
-#define LOGLEVEL LOG_LEVEL_NOOUTPUT 
-//#define LOGLEVEL LOG_LEVEL_ERRORS
-//#define LOGLEVEL LOG_LEVEL_INFOS
-//#define LOGLEVEL LOG_LEVEL_DEBUG
-//#define LOGLEVEL LOG_LEVEL_VERBOSE
+int gLogLevel = LOG_LEVEL_NOOUTPUT;
+//int gLogLevel = LOG_LEVEL_ERRORS;
+//int gLogLevel = LOG_LEVEL_INFOS;
+//int gLogLevel = LOG_LEVEL_DEBUG;
+//int gLogLevel = LOG_LEVEL_VERBOSE;
+
+
+// buf must be an array with length > segmentCount. This function can write to buf[segmentCount]
+void drawMeter(int value, int maxValue, char * buf, char segmentSymbol = '=', size_t totalSegments = 80)
+{
+    float scaleFactor = (float)totalSegments / maxValue;
+    int segmentCount = (int)(0.5 + (min(value, maxValue) * scaleFactor));
+    memset(buf, segmentSymbol, segmentCount);
+    buf[segmentCount] = 0;
+}
 
 void setup()
 {
-  Log.Init(LOGLEVEL, 9600);
+  Log.Init(gLogLevel, 9600);
   harpNoteDetector.setNumNotes(numberNotes);
 
   //For the light sensor
@@ -161,7 +171,10 @@ void checkSonar()
 {
   int height = analogRead(sonarPin);
 
-  Log.Verbose("Height: %d\n", height);
+  char heightBuf[81] = {0};
+  drawMeter(height, 160, heightBuf);
+//  Log.Info("%s\n", heightBuf);
+  Serial.println(heightBuf);
 
   if (height > 170)
   {
@@ -225,10 +238,13 @@ int stepTheMotorAndGetLightReading(int directionToStep)
     myMotor->step(stepSize, directionToStep, DOUBLE);
   delay(delayBetweenSteps);
   int currentLightReading = analogRead(lightSensorPin);
+
+  char lightBuf[81] = {0};
+  drawMeter(currentLightReading, 600, lightBuf, '.');
+  Log.Info("%s\n", lightBuf);
   return currentLightReading;
 }
 
-//Is debug on? If so print some data.
 void checkNotes(int reflectedLightValues[], boolean pluckedNotes[])
 {
   for (int i = 0; i < numberNotes; i++)
@@ -294,6 +310,11 @@ void checkButtons()
       case 'p':
         gPauseMotor = !gPauseMotor;
         break;
+      case 'l':
+        gLogLevel = (gLogLevel + 1) % (LOG_LEVEL_VERBOSE + 1);
+        //Log.Init(9600, gLogLevel);
+        static const  char* levelStrings[]  = {"DISABLED","VERBOSE", "DEBUG", "INFO", "ERROR"};
+        Serial.print("Log level is "); Serial.println(levelStrings[gLogLevel]);
       default:
         Log.Error("Ignorning unknown command: %c\n", c);
         
@@ -322,7 +343,6 @@ void loop()
     checkNotes(reflectedLightValues, pluckedNotes);
   }
 
-  //checkButtons();
   checkSonar();
 
   //It just read item 7. So going backwards, read items 6 through zero.
