@@ -77,6 +77,8 @@ int gLogLevel = LOG_LEVEL_NOOUTPUT;
 //int gLogLevel = LOG_LEVEL_DEBUG;
 //int gLogLevel = LOG_LEVEL_VERBOSE;
 
+int gAverageLightReading = 0;
+const unsigned long gBaud = 250000;
 
 // buf must be an array with length > segmentCount. This function can write to buf[segmentCount]
 void drawMeter(int value, int maxValue, char * buf, char segmentSymbol = '=', size_t totalSegments = 80)
@@ -87,9 +89,31 @@ void drawMeter(int value, int maxValue, char * buf, char segmentSymbol = '=', si
     buf[segmentCount] = 0;
 }
 
+void logMeter(Logging & Log, int value, int maxValue, char segmentSymbol = '=')
+{
+  char buf[81] = {0};
+  drawMeter(value, maxValue, buf, segmentSymbol, sizeof(buf) - 1);
+  Log.Info("%s\n", buf);
+}
+
+int sampleLight(int sampleCount, int interval=2)
+{
+  unsigned long average = analogRead(lightSensorPin);
+  for (int i = 1; i < sampleCount; i++) 
+  {
+    delay(interval);
+    int sample = analogRead(lightSensorPin);
+    average *= i;
+    average += sample;
+    average /= i + 1; 
+    Log.Info("sample %d: %d, average - %d\n", i, sample, average);
+  }
+  return (int)average;
+}
+
 void setup()
 {
-  Log.Init(gLogLevel, 9600);
+  Log.Init(gLogLevel, gBaud);
   harpNoteDetector.setNumNotes(numberNotes);
 
   //For the light sensor
@@ -104,6 +128,7 @@ void setup()
   myMotor->setSpeed(250);
 
   //Get some initial values for each light string
+  gAverageLightReading = sampleLight(50);
   for (int i = 0; i < numberNotes; i++)
   {
     reflectedLightValues[i] = analogRead(lightSensorPin);
@@ -171,9 +196,7 @@ void checkSonar()
 {
   int height = analogRead(sonarPin);
 
-  char heightBuf[81] = {0};
-  drawMeter(height, 160, heightBuf);
-  Log.Info("%s\n", heightBuf);
+  logMeter(Log, height, 160);
 
   if (height > 170)
   {
@@ -235,12 +258,19 @@ int stepTheMotorAndGetLightReading(int directionToStep)
 {
   if (gPauseMotor == false)
     myMotor->step(stepSize, directionToStep, DOUBLE);
-  delay(delayBetweenSteps);
+  unsigned long duration = millis() + delayBetweenSteps;
+  while (millis() < duration)
+  {
+    int light = analogRead(lightSensorPin);
+    logMeter(Log, light, 600, '.');
+
+    if (light > (gAverageLightReading * 1.1)) 
+    {
+      Log.Info("Playing Note!\n");
+    }
+  }
   int currentLightReading = analogRead(lightSensorPin);
 
-  char lightBuf[81] = {0};
-  drawMeter(currentLightReading, 600, lightBuf, '.');
-  Log.Info("%s\n", lightBuf);
   return currentLightReading;
 }
 
