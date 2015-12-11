@@ -78,7 +78,10 @@ int gLogLevel = LOG_LEVEL_NOOUTPUT;
 //int gLogLevel = LOG_LEVEL_VERBOSE;
 
 int gAverageLightReading = 0;
-const unsigned long gBaud = 250000;
+const unsigned long gBaud = 115200;
+
+#define MIDICMD_NOTEON  0x90 // MIDI command (Note On, Channel 0)
+#define MIDICMD_NOTEOFF 0x80 // MIDI command (Note On, Channel 0)
 
 // buf must be an array with length > segmentCount. This function can write to buf[segmentCount]
 void drawMeter(int value, int maxValue, char * buf, char segmentSymbol = '=', size_t totalSegments = 80)
@@ -89,11 +92,28 @@ void drawMeter(int value, int maxValue, char * buf, char segmentSymbol = '=', si
     buf[segmentCount] = 0;
 }
 
-void logMeter(Logging & Log, int value, int maxValue, char segmentSymbol = '=')
+void logMeter(Logging & Log, int value, int maxValue, int level = LOG_LEVEL_INFOS, char segmentSymbol = '=')
 {
   char buf[81] = {0};
   drawMeter(value, maxValue, buf, segmentSymbol, sizeof(buf) - 1);
-  Log.Info("%s\n", buf);
+  switch (level)
+  {
+    case LOG_LEVEL_ERRORS:
+      Log.Error("%s\n", buf);
+      break;
+    case LOG_LEVEL_INFOS:
+      Log.Info("%s\n", buf);
+      break;
+    case LOG_LEVEL_DEBUG:
+      Log.Debug("%s\n", buf);
+      break;
+    case LOG_LEVEL_VERBOSE:
+      Log.Verbose("%s\n", buf);
+      break;
+    case LOG_LEVEL_NOOUTPUT:
+    default:
+      break;
+  }
 }
 
 int sampleLight(int sampleCount, int interval=2)
@@ -108,7 +128,7 @@ int sampleLight(int sampleCount, int interval=2)
     average /= i + 1; 
     Log.Info("sample %d: %d, average - %d\n", i, sample, average);
   }
-  return (int)average;
+  return max(1, (int)average);
 }
 
 void setup()
@@ -252,26 +272,45 @@ void playNote(int firstNote, int secondNote)
 #endif
 }
 
-//Move the motor one step. Sleep, then take a light reading. The sleep
-//gives the sensor time to actually report the new reading.
-int stepTheMotorAndGetLightReading(int directionToStep)
+void SendMIDI(char cmd, char data1, char data2) 
+{
+  Serial.print(cmd);
+  Serial.print(data1);
+  Serial.print(data2);
+}
+
+//Move the motor one step. 
+void stepTheMotor(int directionToStep)
 {
   if (gPauseMotor == false)
     myMotor->step(stepSize, directionToStep, DOUBLE);
+}
+
+void waitForNote(int note) 
+{
+  static bool noteStates[numberNotes] = {0};
+  bool detected = false;
+  bool currentlyOn = noteStates[note];
   unsigned long duration = millis() + delayBetweenSteps;
   while (millis() < duration)
   {
     int light = analogRead(lightSensorPin);
-    logMeter(Log, light, 600, '.');
+    logMeter(Log, light, 600, LOG_LEVEL_INFOS, '.');
+    
+    detected = (light > (gAverageLightReading * 2));
 
-    if (light > (gAverageLightReading * 1.1)) 
+    if (currentlyOn != detected)
     {
-      Log.Info("Playing Note!\n");
-    }
-  }
-  int currentLightReading = analogRead(lightSensorPin);
+      Log.Info("Note %d %s!\n", note, detected ? "on" : "off");
 
-  return currentLightReading;
+      SendMIDI(
+        currentlyOn ? MIDICMD_NOTEOFF : MIDICMD_NOTEON, 
+        0x4a + note, 
+        0x49);
+    }
+          
+  }
+  noteStates[note] = detected;
 }
 
 void checkNotes(int reflectedLightValues[], boolean pluckedNotes[])
@@ -344,6 +383,12 @@ void checkButtons()
         //Log.Init(9600, gLogLevel);
         static const  char* levelStrings[]  = {"DISABLED","VERBOSE", "DEBUG", "INFO", "ERROR"};
         Serial.print("Log level is "); Serial.println(levelStrings[gLogLevel]);
+      case 'n':
+        SendMIDI(MIDICMD_NOTEON, 0x4a, 0x49);
+        break;
+      case 'm':
+        SendMIDI(MIDICMD_NOTEOFF, 0x4a, 0x49);
+        break;
       default:
         Log.Error("Ignorning unknown command: %c\n", c);
         
@@ -368,8 +413,8 @@ void loop()
   //It's already read the zero item. So read array items 1 through 7.
   for (int i = 1; i < numberNotes; i++)
   {
-    reflectedLightValues[i] = stepTheMotorAndGetLightReading(FORWARD);
-    checkNotes(reflectedLightValues, pluckedNotes);
+    stepTheMotor(FORWARD);
+    waitForNote(i);
   }
 
   checkSonar();
@@ -377,8 +422,8 @@ void loop()
   //It just read item 7. So going backwards, read items 6 through zero.
   for (int i = numberNotes - 2; i >= 0; i--)
   {
-    reflectedLightValues[i] = stepTheMotorAndGetLightReading(BACKWARD);
-    checkNotes(reflectedLightValues, pluckedNotes);
+    stepTheMotor(BACKWARD);
+    waitForNote(i);
   }
 
   checkButtons();
