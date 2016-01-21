@@ -1,87 +1,41 @@
+
+#include <SerialCommand.h>
+
 #include <Logging.h>
-
-#ifdef GINSING
-#include <GinSing.h>
-#include <GinSingDefs.h>
-#include <GinSingMaster.h>
-#include <GinSingPoly.h>
-#include <GinSingPreset.h>
-#include <GinSingSerial.h>
-#include <GinSingSerialMacros.h>
-#include <GinSingSynth.h>
-#include <GinSingVoice.h>
-
-#include <Wire.h>
-#include <GinSing.h>
-#endif
 
 #include <Adafruit_MotorShield.h>
 #include "utility/Adafruit_PWMServoDriver.h"
 
-#include "HarpNoteChoice.h"
-#include "HarpNoteDetection.h"
+#define BAUD             115200
+#define LIGHT_SENSOR_PIN      0
+#define RANGE_SENSOR_PIN      1
 
-//When debugging I wanted more information. So ... set this boolean to true
-//to get more stuff printed to the console. When it's true the console dumps LOTS of
-//great stuff - but the code CRAWLS and the laser harp isn't great.
-const boolean debug = false;
+#define MIDICMD_NOTEON     0x90 // MIDI command (Note On, Channel 0)
+#define MIDICMD_NOTEOFF    0x80 // MIDI command (Note On, Channel 0)
 
-boolean gPauseMotor = false;
+#define NOTE_COUNT_MAX      100 // kinda a hack to allow static initialization in waitForNote
 
-// Create the motor shield object with the default I2C address
-Adafruit_MotorShield AFMS = Adafruit_MotorShield();
-// Or, create it with a different I2C address (say for stacking)
-// Adafruit_MotorShield AFMS = Adafruit_MotorShield(0x61);
+int  gNoteCount        =   10;
+bool gMute             =   false;
 
-// Connect a stepper motor with 200 steps per revolution (1.8 degree)
-// to motor port #2 (M3 and M4)
-Adafruit_StepperMotor *myMotor = AFMS.getStepper(200, 2);
+int gMotorStepSize    =   4;
+int gMotorStepsPerRev = 200;
+int gMotorStepDelay   =  10; // set to <= 0 to pause motor
 
-#ifdef GINSING
-GinSing  GS;
-#define rcvPin  4  // this is the pin used for receiving    ( can be either 4 or 12 )
-#define sndPin  3  // this is the pin used for transmitting ( can be either 3 or 11 ) 
-#define ovfPin  2  // this is the pin used for overflow control ( can be either 2 or 10 )
-GinSingPoly * poly;
+int    gLightAverage     = 0;
+double gLightSensitivity = 5;
 
-#define GINSING0 0
-#define GINSING1 1
-#endif
-
-const int lightSensorPin = 0;
-const int sonarPin = 1;
-
-const int stepSize = 1;
-const int delayBetweenSteps = 15;
-const int numberNotes = 7;
-
-#ifdef GINSING
-GSNote ginsingNotes[numberNotes + 1];
-#endif
-
-#ifdef ADJUSTER_BUTTONS
-const int buttonApin = 9;
-const int buttonBpin = 8;
-#endif
-
-HarpNoteChoice harpNoteChoice;
-HarpNoteDetection harpNoteDetector;
-
-boolean pluckedNotes[numberNotes];
-int reflectedLightValues[numberNotes];
-
-
-int gLogLevel = LOG_LEVEL_NOOUTPUT;
-//int gLogLevel = LOG_LEVEL_ERRORS;
+//int gLogLevel = LOG_LEVEL_NOOUTPUT;
+int gLogLevel = LOG_LEVEL_ERRORS;
 //int gLogLevel = LOG_LEVEL_INFOS;
 //int gLogLevel = LOG_LEVEL_DEBUG;
 //int gLogLevel = LOG_LEVEL_VERBOSE;
 
-int gAverageLightReading = 0;
-const unsigned long gBaud = 115200;
+Adafruit_MotorShield AFMS = Adafruit_MotorShield();
+Adafruit_StepperMotor *myMotor = AFMS.getStepper(gMotorStepsPerRev, 2);
 
-#define MIDICMD_NOTEON  0x90 // MIDI command (Note On, Channel 0)
-#define MIDICMD_NOTEOFF 0x80 // MIDI command (Note On, Channel 0)
+SerialCommand sCmd;
+
 
 // buf must be an array with length > segmentCount. This function can write to buf[segmentCount]
 void drawMeter(int value, int maxValue, char * buf, char segmentSymbol = '=', size_t totalSegments = 80)
@@ -116,188 +70,181 @@ void logMeter(Logging & Log, int value, int maxValue, int level = LOG_LEVEL_INFO
   }
 }
 
+int runningAverage(int average, int sample, int index) {
+
+  unsigned long sum = average * index;
+  sum += sample;
+  return (int)(sum /= (index + 1));
+  
+}
+
 int sampleLight(int sampleCount, int interval=2)
 {
-  unsigned long average = analogRead(lightSensorPin);
-  for (int i = 1; i < sampleCount; i++) 
+  int average = 0;
+  for (int i = 0; i < sampleCount; i++) 
   {
     delay(interval);
-    int sample = analogRead(lightSensorPin);
-    average *= i;
-    average += sample;
-    average /= i + 1; 
+    int sample = analogRead(LIGHT_SENSOR_PIN);
+    average = runningAverage(average, sample, i);
     Log.Info("sample %d: %d, average - %d\n", i, sample, average);
   }
   return max(1, (int)average);
 }
 
+void stepMotor(int directionToStep=FORWARD, int steps = -1)
+{
+  if (steps == -1) steps = gMotorStepSize;
+  
+  myMotor->step(steps, directionToStep, DOUBLE);
+}
+
+void setupMotor() {
+  AFMS.begin();  // create with the default frequency 1.6KHz
+  myMotor->setSpeed(250);
+
+  int maxLight = 0;
+  int maxLightStep = 0;
+  for (int i = 0; i < gMotorStepsPerRev; i++) {
+    stepMotor(FORWARD, 1);
+    int sample = sampleLight(10);
+    logMeter(Log, sample, 600, LOG_LEVEL_INFOS);
+    if (sample > maxLight) 
+    {
+      maxLight = sample;
+      maxLightStep = i;
+    }
+  }
+  Log.Error("Max light value (%d) at motor step %d\n", maxLight, maxLightStep);
+  stepMotor(FORWARD, maxLightStep + (gMotorStepsPerRev / 8));
+}
+
+void sampleLightCmd()
+{
+  Serial.println(F("Running sampleLightCmd"));
+  Serial.print(F("Before: ")); Serial.println(gLightAverage);
+  gLightAverage = sampleLight(50);
+  Serial.print(F("After:  ")); Serial.println(gLightAverage);
+}
+
+void setLightSensitivityCmd() 
+{
+  Serial.println(F("Running setLightSensitivityCmd"));
+  char * str = sCmd.next();
+  if (str && *str)
+  {
+    double val = atof(str);
+    if (val > 1)
+    {
+      Serial.print(F("Before: ")); Serial.println(gLightSensitivity);
+      gLightSensitivity = val;
+      Serial.print(F("After:  ")); Serial.println(gLightSensitivity);
+    }
+    else 
+    {
+      Serial.print(F("Invalid value: "));
+      Serial.print(val);
+      Serial.println(F(". Must be > 1."));
+    }
+  }
+  else
+  {
+    Serial.print(F("Invalid input: \""));
+    Serial.print(str);
+    Serial.println(F("\""));
+  }
+}
+
+void setNoteCountCmd() 
+{
+  Serial.println(F("Running setNoteCountCmd"));
+  char * str = sCmd.next();
+  if (str && *str)
+  {
+    int val = atoi(str);
+    if (val > 1)
+    {
+      Serial.print(F("Before: ")); Serial.println(gNoteCount);
+      gNoteCount = val;
+      Serial.print(F("After:  ")); Serial.println(gNoteCount);
+    }
+    else 
+    {
+      Serial.print(F("Invalid value: "));
+      Serial.print(val);
+      Serial.println(F(". Must be > 1."));
+    }
+  }
+  else
+  {
+    Serial.print(F("Invalid input: \""));
+    Serial.print(str);
+    Serial.println(F("\""));
+  }
+}
+void unrecognizedSerialCmd(const char * cmd) 
+{
+  Serial.print(F("Unrecognized serial command: "));
+  Serial.println(cmd);  
+}
+
+void setupSerialCommands()
+{
+  sCmd.addCommand("SampleLight", sampleLightCmd);
+  sCmd.addCommand("SetLightSensitivity", setLightSensitivityCmd);
+  sCmd.addCommand("SetNoteCount", setNoteCountCmd);
+  //sCmd.addCommand("PlayNote")
+  sCmd.setDefaultHandler(unrecognizedSerialCmd);  
+}
+
 void setup()
 {
-  Log.Init(gLogLevel, gBaud);
-  harpNoteDetector.setNumNotes(numberNotes);
+  Log.Init(gLogLevel, BAUD);
 
   //For the light sensor
   analogReference(EXTERNAL);
 
-#ifdef ADJUSTER_BUTTONS
-  pinMode(buttonApin, INPUT_PULLUP);
-  pinMode(buttonBpin, INPUT_PULLUP);
-#endif
-
-  AFMS.begin();  // create with the default frequency 1.6KHz
-  myMotor->setSpeed(250);
+  setupMotor();  
 
   //Get some initial values for each light string
-  gAverageLightReading = sampleLight(50);
-  for (int i = 0; i < numberNotes; i++)
-  {
-    reflectedLightValues[i] = analogRead(lightSensorPin);
-    pluckedNotes[i] = false;
-  }
+  gLightAverage = sampleLight(50);
 
-#ifdef GINSING
-  setupGinSing();
-#endif
-}
-
-#ifdef GINSING
-//This is the code required to get GinSing ready to go.
-void setupGinSing()
-{
-  GS.begin(rcvPin, sndPin, ovfPin);               // start the device (required) and enter preset mode
-  //For preset mode - change this when going to poly mode
-  poly = GS.getPoly();
-  poly->begin();                                    // enter presetmode
-
-  poly->setWaveform(GINSING0, SAWTOOTH);
-  poly->setWaveform(GINSING1, SAWTOOTH);
-
-  setupGinsingNotes();
-}
-
-//These are the notes I want to play with GinSing.
-void setupGinsingNotes()
-{
-  ginsingNotes[0] = C_4;
-  ginsingNotes[1] = D_4;
-  ginsingNotes[2] = E_4;
-  ginsingNotes[3] = F_4;
-  ginsingNotes[4] = G_4;
-  ginsingNotes[5] = A_4;
-  ginsingNotes[6] = B_4;
-}
-#endif
-
-//This code is used to take the sonar reading and convert
-//that into something to change the GinSing note being played.
-int findMultiplier(int height)
-{
-  /*
-    Over 170 = nothing
-    140 = high           80 - 5
-    125 = normal  64 - 4
-    110 = low            48 - 3
-    92 = very low       32 - 2
-    74 = lower          16 - 1
-    62 bottom out
-  */
-  if (height > 135) return 5;
-  if (height > 119) return 4;
-  if (height > 100) return 3;
-  if (height > 80) return 2;
-  //My speaker gets weird at the low values. So I commented that one out.
-  //	if (height > 65) return 1;
-  return 0;
+  setupSerialCommands();
 }
 
 //Read the sonar unit and figure out if the
 //notes should move up or down
 void checkSonar()
 {
-  int height = analogRead(sonarPin);
+  int height = analogRead(RANGE_SENSOR_PIN);
 
   logMeter(Log, height, 160);
 
-  if (height > 170)
-  {
-    return;
-  }
-  int multiplier = findMultiplier(height);
-  int baseValue = 16 * multiplier;
-#ifdef GINSING
-  ginsingNotes[0] = (GSNote)baseValue;
-  ginsingNotes[1] = (GSNote)(baseValue + 1);
-  ginsingNotes[2] = (GSNote)(baseValue + 2);
-  ginsingNotes[3] = (GSNote)(baseValue + 3);
-  ginsingNotes[4] = (GSNote)(baseValue + 4);
-  ginsingNotes[5] = (GSNote)(baseValue + 5);
-  ginsingNotes[6] = (GSNote)(baseValue + 6);
-#endif
 }
 
-#ifdef GINSING
-//These two are the notes that Ginsing is currently playing.
-int ginsingNote0 = -1;
-int ginsingNote1 = -1;
-#endif
-
-//FirstNote and SecondNote are the notes we want to be playing.
-void playNote(int firstNote, int secondNote)
-{
-
-  Log.Verbose("Playing notes %d and %d\n", firstNote, secondNote);
-
-  //Pick the notes to be played and which channel to play them on
-#if GINSING
-  harpNoteChoice.pickNotes(ginsingNote0, ginsingNote1, firstNote, secondNote);
-  if (ginsingNote0 == -1)
-  {
-    poly->release(GINSING0);
-  }
-  else
-  {
-    poly->setNote(GINSING0, ginsingNotes[ginsingNote0]);
-    poly->trigger(GINSING0);
-  }
-
-  if (ginsingNote1 == -1)
-  {
-    poly->release(GINSING1);
-  }
-  else
-  {
-    poly->setNote(GINSING1, ginsingNotes[ginsingNote1]);
-    poly->trigger(GINSING1);
-  }
-#endif
-}
 
 void SendMIDI(char cmd, char data1, char data2) 
 {
-  Serial.print(cmd);
-  Serial.print(data1);
-  Serial.print(data2);
+  if (gMute == false)
+  {
+    Serial.print(cmd);
+    Serial.print(data1);
+    Serial.print(data2);
+  }
 }
 
-//Move the motor one step. 
-void stepTheMotor(int directionToStep)
-{
-  if (gPauseMotor == false)
-    myMotor->step(stepSize, directionToStep, DOUBLE);
-}
 
 void waitForNote(int note) 
 {
-  static bool noteStates[numberNotes] = {0};
+  static bool noteStates[NOTE_COUNT_MAX] = {0};
   bool detected = false;
   bool currentlyOn = noteStates[note];
-  unsigned long duration = millis() + delayBetweenSteps;
+  unsigned long duration = millis() + gMotorStepDelay;
   while (millis() < duration)
   {
-    int light = analogRead(lightSensorPin);
+    int light = analogRead(LIGHT_SENSOR_PIN);
     logMeter(Log, light, 600, LOG_LEVEL_INFOS, '.');
     
-    detected = (light > (gAverageLightReading * 2));
+    detected = (light > (gLightAverage * gLightSensitivity));
 
     if (currentlyOn != detected)
     {
@@ -313,120 +260,92 @@ void waitForNote(int note)
   noteStates[note] = detected;
 }
 
-void checkNotes(int reflectedLightValues[], boolean pluckedNotes[])
+void printInfo()
 {
-  for (int i = 0; i < numberNotes; i++)
-  {
-    Log.Verbose("%d=%d - ", i, reflectedLightValues[i]);
-  }
-  Log.Verbose("\n");
+  Serial.print(F("BAUD                ")); Serial.println(BAUD);
+  Serial.print(F("LIGHT_SENSOR_PIN    ")); Serial.println(LIGHT_SENSOR_PIN);
+  Serial.print(F("RANGE_SENSOR_PIN    ")); Serial.println(RANGE_SENSOR_PIN);
 
-  //So ... are any light readings different from any others?
-  //To find the anomaly, see how different each string is to every other string.
-  //One or two strings should stand out. Those are the plucked strings.
-  harpNoteDetector.checkNotes(reflectedLightValues, pluckedNotes);
+  Serial.print(F("MIDICMD_NOTEON      ")); Serial.println(MIDICMD_NOTEON);
+  Serial.print(F("MIDICMD_NOTEOFF     ")); Serial.println(MIDICMD_NOTEOFF);
 
-  //So what strings are plucked? Note that if more than two are plucked,
-  //that counts as an error ... if that's the case, just keep playing the current notes
-  //and hope the player gets his act straight.
-  int firstNote = -1;
-  int secondNote = -1;
-  if (harpNoteDetector.getNotes(firstNote, secondNote, pluckedNotes))
-  {
-    if (firstNote >= 0)
-    {
-      Log.Verbose("==============PLUCKED 1: %d\n", firstNote);
-    }
-    if (secondNote >= 0)
-    {
-      Log.Verbose("==============PLUCKED 2: %d\n", secondNote);
-    }
-    playNote(firstNote, secondNote);
-  }
-  else
-  {
-    Log.Verbose("getNotes returned false - more than three notes were counted as plucked.\n");
-  }
-  return;
+  Serial.print(F("NOTE_COUNT_MAX      ")); Serial.println(NOTE_COUNT_MAX);
+
+  Serial.print(F("gNoteCount        = ")); Serial.println(gNoteCount);
+  Serial.print(F("gMute             = ")); Serial.println(gMute ? F("true") : F("false"));
+  
+  Serial.print(F("gMotorStepSize    = ")); Serial.println(gMotorStepSize);
+  Serial.print(F("gMotorStepsPerRev = ")); Serial.println(gMotorStepsPerRev);
+  Serial.print(F("gMotorStepDelay   = ")); Serial.println(gMotorStepDelay);
+
+  Serial.print(F("gLightAverage     = ")); Serial.println(gLightAverage);
+  Serial.print(F("gLightSensitivity = ")); Serial.println(gLightSensitivity);
+
+  Serial.print(F("gLogLevel         = ")); Serial.println(gLogLevel);
 }
 
-//Is a button pressed? If so move the motor a bit. This lets the user adjust the laser fan so it's pointing upwards properly.
 void checkButtons()
 {
-#ifdef ADJUSTER_BUTTONS
-  if (digitalRead(buttonApin) == LOW)
-  {
-    myMotor->step(stepSize, BACKWARD, DOUBLE);
-  }
-
-  if (digitalRead(buttonBpin) == LOW)
-  {
-    myMotor->step(stepSize, FORWARD, DOUBLE);
-  }
-#else
   while (Serial.available() > 0)
   {
     char c = Serial.read();
+    Serial.print(F("Read character from serial: ")); Serial.println(c);
     switch (c)
     {
       case 'f':
-        myMotor->step(stepSize, FORWARD, DOUBLE);
+        stepMotor(FORWARD);
         break;
       case 'b':
-        myMotor->step(stepSize, BACKWARD, DOUBLE);
+        stepMotor(BACKWARD);
         break;
       case 'p':
-        gPauseMotor = !gPauseMotor;
+        gMotorStepDelay *= -1;
+        break;
+      case 'c':
+        Serial.println("Entering sCmd.readSerial()");
+        sCmd.readSerial();
+        Serial.println("Exited sCmd.readSerial()");
         break;
       case 'l':
         gLogLevel = (gLogLevel + 1) % (LOG_LEVEL_VERBOSE + 1);
         //Log.Init(9600, gLogLevel);
         static const  char* levelStrings[]  = {"DISABLED","VERBOSE", "DEBUG", "INFO", "ERROR"};
-        Serial.print("Log level is "); Serial.println(levelStrings[gLogLevel]);
-      case 'n':
-        SendMIDI(MIDICMD_NOTEON, 0x4a, 0x49);
-        break;
+        Serial.print(F("Log level is ")); Serial.println(levelStrings[gLogLevel]);
       case 'm':
-        SendMIDI(MIDICMD_NOTEOFF, 0x4a, 0x49);
+        gMute = !gMute;
         break;
+      case 'i':
+        printInfo();
+        break;
+      case '\n':
+        break; // ignore newlines
       default:
-        Log.Error("Ignorning unknown command: %c\n", c);
-        
+        Serial.print(F("Ignorning unknown command: ")); Serial.println(c);        
     }
   }
-#endif
 }
 
 void loop()
 {
 
-  //There must be at least a handful notes for the code below to work right.
-  if (numberNotes < 5)
+  for (int i = 1; i < gNoteCount; i++)
   {
-    return;
-  }
-
-  //Run the laser forward, read all values, and see what is there. Note that this pretty much uses one
-  //less note than requested - but the START position counts as a spot. So moving it numberNotes makes that many
-  //strings plus the start string.
-
-  //It's already read the zero item. So read array items 1 through 7.
-  for (int i = 1; i < numberNotes; i++)
-  {
-    stepTheMotor(FORWARD);
-    waitForNote(i);
+    if (gMotorStepDelay > 0) {
+      stepMotor(FORWARD);
+      waitForNote(i);
+    }
   }
 
   checkSonar();
 
-  //It just read item 7. So going backwards, read items 6 through zero.
-  for (int i = numberNotes - 2; i >= 0; i--)
+  for (int i = gNoteCount - 2; i >= 0; i--)
   {
-    stepTheMotor(BACKWARD);
-    waitForNote(i);
+    if (gMotorStepDelay > 0) {
+      stepMotor(BACKWARD);
+      waitForNote(i);
+    }
   }
 
   checkButtons();
   checkSonar();
-
 }
