@@ -6,6 +6,8 @@
 #include <Adafruit_MotorShield.h>
 #include "utility/Adafruit_PWMServoDriver.h"
 
+#include <GinSing.h>   
+
 #define BAUD             115200
 #define LIGHT_SENSOR_PIN      0
 #define RANGE_SENSOR_PIN      1
@@ -13,8 +15,15 @@
 #define MIDICMD_NOTEON     0x90 // MIDI command (Note On, Channel 0)
 #define MIDICMD_NOTEOFF    0x80 // MIDI command (Note On, Channel 0)
 
-#define NOTE_COUNT_MAX      100 // kinda a hack to allow static initialization in waitForNote
+#define NOTE_COUNT_MAX      10 // kinda a hack to allow static initialization in waitForNote
 
+GinSing  gGS;            // this creates the class library from which all methods and data are accessed
+GinSingPoly * gGSPoly =     NULL;
+
+GSNote gGSNote[NOTE_COUNT_MAX] = {C_6, CS_6, D_6, DS_6, E_6, F_6, FS_6, G_6, GS_6, A_6};
+
+bool gMidi             =   false;
+bool gGinsing          =   true;
 int  gNoteCount        =   10;
 bool gMute             =   false;
 
@@ -98,15 +107,16 @@ void stepMotor(int directionToStep=FORWARD, int steps = -1)
   myMotor->step(steps, directionToStep, DOUBLE);
 }
 
-void setupMotor() {
-  AFMS.begin();  // create with the default frequency 1.6KHz
-  myMotor->setSpeed(250);
-
+void autoPositionMirror() {
   int maxLight = 0;
   int maxLightStep = 0;
   for (int i = 0; i < gMotorStepsPerRev; i++) {
+    if (i % (gMotorStepsPerRev / 10) == 0)
+    {
+      Serial.print(F("."));
+    }
     stepMotor(FORWARD, 1);
-    int sample = sampleLight(10);
+    int sample = sampleLight(30);
     logMeter(Log, sample, 600, LOG_LEVEL_INFOS);
     if (sample > maxLight) 
     {
@@ -114,13 +124,23 @@ void setupMotor() {
       maxLightStep = i;
     }
   }
-  Log.Error("Max light value (%d) at motor step %d\n", maxLight, maxLightStep);
+  Log.Info("Max light value (%d) at motor step %d\n", maxLight, maxLightStep);
   stepMotor(FORWARD, maxLightStep + (gMotorStepsPerRev / 8));
+}
+
+void setupMotor() {
+  Serial.print(F("Setting up motor..."));
+  AFMS.begin();  // create with the default frequency 1.6KHz
+  myMotor->setSpeed(250);
+  autoPositionMirror();
+  Serial.println(F("done"));
+  
 }
 
 void sampleLightCmd()
 {
-  Serial.println(F("Running sampleLightCmd"));
+  Serial.print(F("Running ")); Serial.println(__FUNCTION__);
+
   Serial.print(F("Before: ")); Serial.println(gLightAverage);
   gLightAverage = sampleLight(50);
   Serial.print(F("After:  ")); Serial.println(gLightAverage);
@@ -128,7 +148,8 @@ void sampleLightCmd()
 
 void setLightSensitivityCmd() 
 {
-  Serial.println(F("Running setLightSensitivityCmd"));
+  Serial.print(F("Running ")); Serial.println(__FUNCTION__);
+
   char * str = sCmd.next();
   if (str && *str)
   {
@@ -156,12 +177,13 @@ void setLightSensitivityCmd()
 
 void setNoteCountCmd() 
 {
-  Serial.println(F("Running setNoteCountCmd"));
+  Serial.print(F("Running ")); Serial.println(__FUNCTION__);
+
   char * str = sCmd.next();
   if (str && *str)
   {
     int val = atoi(str);
-    if (val > 1)
+    if (val > 1 && val <= NOTE_COUNT_MAX)
     {
       Serial.print(F("Before: ")); Serial.println(gNoteCount);
       gNoteCount = val;
@@ -187,28 +209,114 @@ void unrecognizedSerialCmd(const char * cmd)
   Serial.println(cmd);  
 }
 
+void playMidiNote(bool on, int note) 
+{
+  if (gMidi == false)
+  {
+    return;
+  }
+  char cmd = on ? MIDICMD_NOTEON : MIDICMD_NOTEOFF;
+  char data1 = 0x4a + note;
+  char data2 = 0x49;
+  Serial.print(cmd);
+  Serial.print(data1);
+  Serial.print(data2);
+}
+
+void playGinsingNote(bool on, int note)
+{
+  if (gGinsing == false)
+  {
+    return;
+  }
+
+  if (on == true)
+  {
+    gGSPoly->setNote(1, gGSNote[note]);
+    gGSPoly->trigger(1);
+  }
+  else
+  {
+    gGSPoly->release(1);
+  }
+}
+  
+  
+void playNote(bool on, int note)
+{
+  if (on == true && gMute == true) 
+  {
+    return;
+  }
+
+  playMidiNote(on, note);
+
+  playGinsingNote(on, note);
+}
+
+
+void playNotesCmd()
+{
+  Serial.println(F("Running playNoteCmd"));
+  Serial.print(F("Playing notes: "));
+  for (int iNote = 0; iNote < NOTE_COUNT_MAX; iNote++)
+  {
+    Serial.print(iNote); Serial.print(F(" "));
+    playNote(true, iNote);
+    delay(250);
+    playNote(false, iNote);
+  }
+  Serial.println();
+}
+
 void setupSerialCommands()
 {
   sCmd.addCommand("SampleLight", sampleLightCmd);
   sCmd.addCommand("SetLightSensitivity", setLightSensitivityCmd);
   sCmd.addCommand("SetNoteCount", setNoteCountCmd);
-  //sCmd.addCommand("PlayNote")
+  sCmd.addCommand("AutoPosition", autoPositionMirror);
+  sCmd.addCommand("PlayNotes", playNotesCmd);
   sCmd.setDefaultHandler(unrecognizedSerialCmd);  
+}
+
+void setupGinsing()
+{
+  if (gGinsing == false)
+  {
+    return;
+  }
+  
+  Serial.println(F("Setting up ginsing"));
+
+#define rcvPin  4       // this is the pin used for receiving    ( can be either 4 or 12 )
+#define sndPin  3       // this is the pin used for transmitting ( can be either 3 or 11 ) 
+#define ovfPin  2       // this is the pin used for overflow control ( can be either 2 or 10 )
+  gGS.begin( rcvPin , sndPin , ovfPin );
+
+//  GinSingVoice *voice = gGS.getVoice();                    // get the interface for voice mode
+//  voice->begin();                                         // enter voice mode
+//  voice->preview();                                       // preview the mode
+
+  gGSPoly = gGS.getPoly();                           // get the poly mode interface
+  gGSPoly->begin ();  // enter poly mode
 }
 
 void setup()
 {
+  setupSerialCommands();
+
   Log.Init(gLogLevel, BAUD);
 
   //For the light sensor
   analogReference(EXTERNAL);
 
+  setupGinsing();
+  
   setupMotor();  
 
   //Get some initial values for each light string
   gLightAverage = sampleLight(50);
 
-  setupSerialCommands();
 }
 
 //Read the sonar unit and figure out if the
@@ -221,24 +329,12 @@ void checkSonar()
 
 }
 
-
-void SendMIDI(char cmd, char data1, char data2) 
-{
-  if (gMute == false)
-  {
-    Serial.print(cmd);
-    Serial.print(data1);
-    Serial.print(data2);
-  }
-}
-
-
-void waitForNote(int note) 
+void waitForNote(int note, int delay) 
 {
   static bool noteStates[NOTE_COUNT_MAX] = {0};
   bool detected = false;
   bool currentlyOn = noteStates[note];
-  unsigned long duration = millis() + gMotorStepDelay;
+  unsigned long duration = millis() + delay;
   while (millis() < duration)
   {
     int light = analogRead(LIGHT_SENSOR_PIN);
@@ -249,11 +345,7 @@ void waitForNote(int note)
     if (currentlyOn != detected)
     {
       Log.Info("Note %d %s!\n", note, detected ? "on" : "off");
-
-      SendMIDI(
-        currentlyOn ? MIDICMD_NOTEOFF : MIDICMD_NOTEON, 
-        0x4a + note, 
-        0x49);
+      playNote(detected, note);
     }
           
   }
@@ -327,25 +419,40 @@ void checkButtons()
 
 void loop()
 {
+  static int iNote = 0;
+  static int motorDirection = FORWARD;
 
-  for (int i = 1; i < gNoteCount; i++)
-  {
-    if (gMotorStepDelay > 0) {
-      stepMotor(FORWARD);
-      waitForNote(i);
-    }
-  }
-
+  waitForNote(iNote, gMotorStepDelay);
   checkSonar();
-
-  for (int i = gNoteCount - 2; i >= 0; i--)
-  {
-    if (gMotorStepDelay > 0) {
-      stepMotor(BACKWARD);
-      waitForNote(i);
-    }
-  }
-
   checkButtons();
-  checkSonar();
+
+  if (gMotorStepDelay > 0) 
+  {
+    stepMotor(motorDirection);
+    if (motorDirection == FORWARD)
+    {
+      iNote++;
+      if (iNote == (gNoteCount-1))
+      {
+        motorDirection = BACKWARD;
+      }
+    }
+    else
+    { 
+      iNote--;
+      if (iNote == 0)
+      {
+        motorDirection = FORWARD;
+      }
+    }
+  }
 }
+
+void shutdown ()
+{
+  if (gGinsing == true)
+  {
+     gGS.end();
+  }
+}
+
